@@ -2,12 +2,12 @@
 set -e
 
 # HeavyMetal Network CLI installer
-# Usage: curl -sSL https://raw.githubusercontent.com/heavymetal-network/hmn-vm/main/hmn-cli/install.sh | sh
+# Usage: curl -sSL https://raw.githubusercontent.com/heavymetal-network/hmn-cli-pub/main/install.sh | sh
 # Version-pinned: HMN_VERSION=0.1.0 curl -sSL ... | sh
 
 REPO="heavymetal-network/hmn-cli-pub"
 BINARY="hmn"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="${HOME}/.local/bin"
 
 OS="$(uname -s)"
 case "${OS}" in
@@ -56,14 +56,34 @@ fi
 
 tar -xzf "${ARCHIVE}" -C "${TMP}"
 
-if [ -w "${INSTALL_DIR}" ]; then
-  mv "${TMP}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-else
-  echo "Installing to ${INSTALL_DIR} requires sudo..."
-  sudo mv "${TMP}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-fi
+mkdir -p "${INSTALL_DIR}"
+mv "${TMP}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 chmod 755 "${INSTALL_DIR}/${BINARY}"
 
 echo ""
 echo "hmn v${VERSION} installed to ${INSTALL_DIR}/${BINARY}"
-"${INSTALL_DIR}/${BINARY}" --version
+
+# Add to PATH if not already there
+if ! echo "${PATH}" | grep -q "${INSTALL_DIR}"; then
+  SHELL_RC=""
+  case "$(basename "${SHELL}")" in
+    zsh)  SHELL_RC="${HOME}/.zshrc" ;;
+    bash)
+      if [ -f "${HOME}/.bashrc" ]; then
+        SHELL_RC="${HOME}/.bashrc"
+      else
+        SHELL_RC="${HOME}/.bash_profile"
+      fi
+      ;;
+  esac
+
+  if [ -n "${SHELL_RC}" ] && ! grep -q "${INSTALL_DIR}" "${SHELL_RC}" 2>/dev/null; then
+    printf '\n# hmn-cli\nexport PATH="%s:$PATH"\n' "${INSTALL_DIR}" >> "${SHELL_RC}"
+    echo "Added ${INSTALL_DIR} to PATH in ${SHELL_RC}"
+    echo "Restart your terminal or run: source ${SHELL_RC}"
+  else
+    echo ""
+    echo "Add to your shell profile to use hmn from any directory:"
+    echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+  fi
+fi
