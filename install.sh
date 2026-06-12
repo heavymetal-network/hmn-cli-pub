@@ -46,7 +46,11 @@ curl -sSL --fail "${BASE_URL}/${ARCHIVE}" -o "${TMP}/${ARCHIVE}"
 curl -sSL --fail "${BASE_URL}/hmn_${VERSION}_checksums.txt" -o "${TMP}/checksums.txt"
 
 cd "${TMP}"
-if command -v sha256sum > /dev/null 2>&1; then
+# macOS ships a BSD sha256sum that doesn't accept --check/--status (GNU flags).
+# Prefer shasum on Darwin (always available, supports --check --status correctly).
+if [ "${OS}" = "darwin" ] && command -v shasum > /dev/null 2>&1; then
+  grep "${ARCHIVE}" checksums.txt | shasum -a 256 --check --status
+elif command -v sha256sum > /dev/null 2>&1; then
   grep "${ARCHIVE}" checksums.txt | sha256sum --check --status
 elif command -v shasum > /dev/null 2>&1; then
   grep "${ARCHIVE}" checksums.txt | shasum -a 256 --check --status
@@ -59,6 +63,12 @@ tar -xzf "${ARCHIVE}" -C "${TMP}"
 mkdir -p "${INSTALL_DIR}"
 mv "${TMP}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
 chmod 755 "${INSTALL_DIR}/${BINARY}"
+
+# macOS Gatekeeper: clear the quarantine attribute so the binary runs without
+# "Apple cannot check it for malicious software" security prompts.
+if [ "${OS}" = "darwin" ]; then
+  xattr -d com.apple.quarantine "${INSTALL_DIR}/${BINARY}" 2>/dev/null || true
+fi
 
 echo ""
 echo "hmn v${VERSION} installed to ${INSTALL_DIR}/${BINARY}"
