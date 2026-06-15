@@ -1,99 +1,150 @@
 #!/usr/bin/env sh
 set -e
 
-# HeavyMetal Network CLI installer
-# Usage: curl -sSL https://raw.githubusercontent.com/heavymetal-network/hmn-cli-pub/main/install.sh | sh
-# Version-pinned: HMN_VERSION=0.1.0 curl -sSL ... | sh
+# HeavyMetal Network CLI installer (sc-569)
+#
+#   curl -fsSL https://api.heavymetal.network/install.sh | bash
+#
+#   macOS   → Homebrew (installs Homebrew first if it's missing)
+#   Linux   → direct binary into ~/.local/bin
+#   Windows → use install.ps1 / Scoop (see message below)
+#
+# Pin a version:   HMN_VERSION=0.16.46 curl -fsSL ... | bash   (Linux only; brew is always latest)
+# Dry run:         HMN_INSTALL_DRY_RUN=1 ...                    (print actions, change nothing)
+# Force OS (test): HMN_INSTALL_OS=linux HMN_INSTALL_DRY_RUN=1 sh install.sh
 
 REPO="heavymetal-network/hmn-cli-pub"
+TAP="heavymetal-network/tap"   # `brew install heavymetal-network/tap/hmn` auto-taps homebrew-tap
 BINARY="hmn"
 INSTALL_DIR="${HOME}/.local/bin"
 
-OS="$(uname -s)"
-case "${OS}" in
-  Linux*)  OS=linux ;;
-  Darwin*) OS=darwin ;;
-  *)       echo "Unsupported OS: ${OS}" >&2; exit 1 ;;
-esac
+info() { printf '%s\n' "$*"; }
+err()  { printf 'error: %s\n' "$*" >&2; }
 
-ARCH="$(uname -m)"
-case "${ARCH}" in
-  x86_64|amd64)  ARCH=amd64 ;;
-  arm64|aarch64) ARCH=arm64 ;;
-  *)             echo "Unsupported arch: ${ARCH}" >&2; exit 1 ;;
-esac
+# run executes a command, or just prints it (prefixed with +) in dry-run mode.
+run() {
+  if [ -n "${HMN_INSTALL_DRY_RUN}" ]; then
+    printf '+ %s\n' "$*"
+  else
+    eval "$*"
+  fi
+}
 
-if [ -z "${HMN_VERSION}" ]; then
-  echo "Fetching latest hmn-cli release..."
-  LATEST="$(curl -sSL "https://api.github.com/repos/${REPO}/releases/latest")"
-  TAG="$(printf '%s' "${LATEST}" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
-  VERSION="$(printf '%s' "${TAG}" | sed 's|^v||')"
+# --- Detect OS (HMN_INSTALL_OS overrides, for dry-run testing of each branch) ---
+if [ -n "${HMN_INSTALL_OS}" ]; then
+  OS="${HMN_INSTALL_OS}"
 else
-  VERSION="${HMN_VERSION}"
+  case "$(uname -s)" in
+    Darwin*)              OS=darwin ;;
+    Linux*)               OS=linux ;;
+    MINGW*|MSYS*|CYGWIN*) OS=windows ;;
+    *)                    err "Unsupported OS: $(uname -s)"; exit 1 ;;
+  esac
 fi
 
-[ -z "${VERSION}" ] && { echo "Could not determine version. Set HMN_VERSION=x.y.z to override." >&2; exit 1; }
+# --- Load Homebrew onto PATH if installed but not exported (non-login shells) ---
+load_brew() {
+  command -v brew >/dev/null 2>&1 && return 0
+  for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+    if [ -x "${b}" ]; then
+      eval "$("${b}" shellenv)"
+      return 0
+    fi
+  done
+  return 1
+}
 
-echo "Installing hmn v${VERSION} (${OS}/${ARCH})..."
+install_macos() {
+  if ! load_brew; then
+    info "Homebrew is required and not installed. Installing Homebrew first..."
+    # NONINTERACTIVE=1 keeps the official installer from prompting; it still reads
+    # sudo from the controlling terminal when needed.
+    run 'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+    load_brew || true
+  fi
 
-ARCHIVE="hmn_${VERSION}_${OS}_${ARCH}.tar.gz"
-BASE_URL="https://github.com/${REPO}/releases/download/v${VERSION}"
+  if [ -z "${HMN_INSTALL_DRY_RUN}" ] && ! command -v brew >/dev/null 2>&1; then
+    err "Homebrew is not available after install. Install it from https://brew.sh then re-run."
+    exit 1
+  fi
 
-TMP="$(mktemp -d)"
-trap 'rm -rf "${TMP}"' EXIT
+  if [ -z "${HMN_INSTALL_DRY_RUN}" ] && brew list "${TAP}/${BINARY}" >/dev/null 2>&1; then
+    info "hmn is already installed via Homebrew — upgrading..."
+    run "brew update"
+    run "brew upgrade ${TAP}/${BINARY}"
+  else
+    info "Installing hmn via Homebrew..."
+    run "brew install ${TAP}/${BINARY}"
+  fi
 
-curl -sSL --fail "${BASE_URL}/${ARCHIVE}" -o "${TMP}/${ARCHIVE}"
-curl -sSL --fail "${BASE_URL}/hmn_${VERSION}_checksums.txt" -o "${TMP}/checksums.txt"
+  info ""
+  info "hmn installed. Next: run 'hmn setup' to get started."
+}
 
-cd "${TMP}"
-# macOS ships a BSD sha256sum that doesn't accept --check/--status (GNU flags).
-# Prefer shasum on Darwin (always available, supports --check --status correctly).
-if [ "${OS}" = "darwin" ] && command -v shasum > /dev/null 2>&1; then
-  grep "${ARCHIVE}" checksums.txt | shasum -a 256 --check --status
-elif command -v sha256sum > /dev/null 2>&1; then
-  grep "${ARCHIVE}" checksums.txt | sha256sum --check --status
-elif command -v shasum > /dev/null 2>&1; then
-  grep "${ARCHIVE}" checksums.txt | shasum -a 256 --check --status
-else
-  echo "Warning: no sha256 tool found, skipping checksum verification" >&2
-fi
-
-tar -xzf "${ARCHIVE}" -C "${TMP}"
-
-mkdir -p "${INSTALL_DIR}"
-mv "${TMP}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-chmod 755 "${INSTALL_DIR}/${BINARY}"
-
-# macOS Gatekeeper: clear the quarantine attribute so the binary runs without
-# "Apple cannot check it for malicious software" security prompts.
-if [ "${OS}" = "darwin" ]; then
-  xattr -d com.apple.quarantine "${INSTALL_DIR}/${BINARY}" 2>/dev/null || true
-fi
-
-echo ""
-echo "hmn v${VERSION} installed to ${INSTALL_DIR}/${BINARY}"
-
-# Add to PATH if not already there
-if ! echo "${PATH}" | grep -q "${INSTALL_DIR}"; then
-  SHELL_RC=""
-  case "$(basename "${SHELL}")" in
-    zsh)  SHELL_RC="${HOME}/.zshrc" ;;
-    bash)
-      if [ -f "${HOME}/.bashrc" ]; then
-        SHELL_RC="${HOME}/.bashrc"
-      else
-        SHELL_RC="${HOME}/.bash_profile"
-      fi
-      ;;
+install_linux() {
+  ARCH="$(uname -m)"
+  case "${ARCH}" in
+    x86_64|amd64)  ARCH=amd64 ;;
+    arm64|aarch64) ARCH=arm64 ;;
+    *)             err "Unsupported arch: ${ARCH}"; exit 1 ;;
   esac
 
-  if [ -n "${SHELL_RC}" ] && ! grep -q "${INSTALL_DIR}" "${SHELL_RC}" 2>/dev/null; then
-    printf '\n# hmn-cli\nexport PATH="%s:$PATH"\n' "${INSTALL_DIR}" >> "${SHELL_RC}"
-    echo "Added ${INSTALL_DIR} to PATH in ${SHELL_RC}"
-    echo "Restart your terminal or run: source ${SHELL_RC}"
+  if [ -n "${HMN_VERSION}" ]; then
+    VERSION="${HMN_VERSION}"
+  elif [ -n "${HMN_INSTALL_DRY_RUN}" ]; then
+    VERSION="<latest>"
   else
-    echo ""
-    echo "Add to your shell profile to use hmn from any directory:"
-    echo "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+    info "Fetching latest hmn-cli release..."
+    LATEST="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest")"
+    TAG="$(printf '%s' "${LATEST}" | grep '"tag_name"' | head -1 | sed 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')"
+    VERSION="$(printf '%s' "${TAG}" | sed 's|^v||')"
+    [ -z "${VERSION}" ] && { err "Could not determine version. Set HMN_VERSION=x.y.z to override."; exit 1; }
   fi
-fi
+
+  info "Installing hmn v${VERSION} (linux/${ARCH}) to ${INSTALL_DIR}..."
+  ARCHIVE="hmn_${VERSION}_linux_${ARCH}.tar.gz"
+  BASE_URL="https://github.com/${REPO}/releases/download/v${VERSION}"
+
+  if [ -n "${HMN_INSTALL_DRY_RUN}" ]; then
+    run "curl -fsSL ${BASE_URL}/${ARCHIVE} -o <tmp>/${ARCHIVE}  # + checksum verify"
+    run "tar -xzf ${ARCHIVE} && mv ${BINARY} ${INSTALL_DIR}/${BINARY}"
+    return 0
+  fi
+
+  TMP="$(mktemp -d)"
+  trap 'rm -rf "${TMP}"' EXIT
+  curl -fsSL "${BASE_URL}/${ARCHIVE}" -o "${TMP}/${ARCHIVE}"
+  curl -fsSL "${BASE_URL}/hmn_${VERSION}_checksums.txt" -o "${TMP}/checksums.txt"
+  cd "${TMP}"
+  if command -v sha256sum >/dev/null 2>&1; then
+    grep "${ARCHIVE}" checksums.txt | sha256sum --check --status
+  elif command -v shasum >/dev/null 2>&1; then
+    grep "${ARCHIVE}" checksums.txt | shasum -a 256 --check --status
+  else
+    err "no sha256 tool found, skipping checksum verification"
+  fi
+  tar -xzf "${ARCHIVE}" -C "${TMP}"
+  mkdir -p "${INSTALL_DIR}"
+  mv "${TMP}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+  chmod 755 "${INSTALL_DIR}/${BINARY}"
+
+  info ""
+  info "hmn v${VERSION} installed to ${INSTALL_DIR}/${BINARY}"
+  if ! printf '%s' "${PATH}" | grep -q "${INSTALL_DIR}"; then
+    info "Add ${INSTALL_DIR} to your PATH:"
+    info "  export PATH=\"${INSTALL_DIR}:\$PATH\""
+  fi
+  info "Next: run 'hmn setup' to get started."
+}
+
+case "${OS}" in
+  darwin) install_macos ;;
+  linux)  install_linux ;;
+  windows)
+    err "Windows detected — this shell installer doesn't run there."
+    err "In PowerShell, run:"
+    err "  irm https://api.heavymetal.network/install.ps1 | iex"
+    err "  (or: scoop install hmn)"
+    exit 1 ;;
+  *) err "Unsupported OS: ${OS}"; exit 1 ;;
+esac
