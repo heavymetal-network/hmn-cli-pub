@@ -43,15 +43,30 @@ else
 fi
 
 # --- Load Homebrew onto PATH if installed but not exported (non-login shells) ---
+# Sets BREW_SHELLENV_BIN to the brew binary that worked, so the post-install
+# message can name the exact path (/opt/homebrew on Apple Silicon, /usr/local on Intel).
+BREW_SHELLENV_BIN=""
 load_brew() {
-  command -v brew >/dev/null 2>&1 && return 0
+  if command -v brew >/dev/null 2>&1; then
+    BREW_SHELLENV_BIN="$(command -v brew)"
+    return 0
+  fi
   for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
     if [ -x "${b}" ]; then
       eval "$("${b}" shellenv)"
+      BREW_SHELLENV_BIN="${b}"
       return 0
     fi
   done
   return 1
+}
+
+# --- Shell profile file for PATH guidance (macOS default shell is zsh) ---
+profile_file() {
+  case "${SHELL:-}" in
+    */bash) printf '%s' "${HOME}/.bash_profile" ;;
+    *)      printf '%s' "${HOME}/.zprofile" ;;
+  esac
 }
 
 install_macos() {
@@ -78,7 +93,26 @@ install_macos() {
   fi
 
   info ""
-  info "hmn installed. Next: run 'hmn setup' to get started."
+  info "hmn installed."
+
+  # If Homebrew was just bootstrapped, the official installer does NOT edit the
+  # user's shell profile — load_brew only put brew on PATH for THIS script. In a
+  # fresh terminal neither brew nor hmn is on PATH, so `hmn setup` would fail with
+  # "command not found". Detect that and print the commands to fix it (sc-692).
+  if [ -z "${HMN_INSTALL_DRY_RUN}" ] && ! command -v hmn >/dev/null 2>&1; then
+    brew_bin="${BREW_SHELLENV_BIN:-/opt/homebrew/bin/brew}"
+    prof="$(profile_file)"
+    info ""
+    info "⚠  Homebrew (and hmn) are not on your PATH yet."
+    info "   Add Homebrew to your PATH, then re-open your terminal or run:"
+    info ""
+    info "     echo 'eval \"\$(${brew_bin} shellenv)\"' >> ${prof}"
+    info "     eval \"\$(${brew_bin} shellenv)\""
+    info ""
+    info "   Then run: hmn setup"
+  else
+    info "Next: run 'hmn setup' to get started."
+  fi
 }
 
 install_linux() {
